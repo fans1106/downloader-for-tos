@@ -1,0 +1,106 @@
+{% extends 'base.html' %}
+{% block title %}任务 #{{ task.id }}{% endblock %}
+{% block content %}
+<section class="panel detail-head">
+  <div>
+    <p class="eyebrow">TASK #{{ task.id }}</p>
+    <h2>{{ task.repo_id }}</h2>
+    <p>{{ task.repo_type }} -> {{ task.tos_target }}</p>
+  </div>
+  <div class="detail-actions">
+    {% if task.status in ['queued', 'running'] %}
+    <form action="/tasks/{{ task.id }}/cancel" method="post"><button type="submit" class="danger">取消任务</button></form>
+    {% endif %}
+    {% if task.status in ['failed', 'cancelled', 'interrupted'] %}
+    <form action="/tasks/{{ task.id }}/retry" method="post"><button type="submit">重新入队</button></form>
+    {% endif %}
+    <a href="/tasks" class="ghost-link">返回总览</a>
+  </div>
+</section>
+
+<section class="panel metrics">
+  <div class="metric-card">
+    <span>状态</span>
+    <strong class="badge badge-{{ task.status }}">{{ task.status }}</strong>
+  </div>
+  <div class="metric-card">
+    <span>当前阶段</span>
+    <strong>{{ task.current_stage }}</strong>
+  </div>
+  <div class="metric-card">
+    <span>重试轮次</span>
+    <strong>{{ task.attempt_count }}</strong>
+  </div>
+  <div class="metric-card">
+    <span>HF Token</span>
+    <strong>{{ task.hf_token_masked }}</strong>
+  </div>
+</section>
+
+<section class="panel split">
+  <div>
+    <div class="panel-head">
+      <h2>任务配置</h2>
+      <p>高级参数都会持久化，失败后重试时沿用原配置。</p>
+    </div>
+    <dl class="details-grid">
+      <dt>Revision</dt><dd>{{ task.revision or '-' }}</dd>
+      <dt>批次上限</dt><dd>{{ '%.2f'|format(task.batch_size_limit_bytes / 1024 / 1024 / 1024) }} GB</dd>
+      <dt>最大重试</dt><dd>{{ task.max_retries }}</dd>
+      <dt>本地目录</dt><dd>{{ task.local_download_dir or '-' }}</dd>
+      <dt>Allow</dt><dd>{{ task.allow_patterns|join(', ') if task.allow_patterns else '-' }}</dd>
+      <dt>Ignore</dt><dd>{{ task.ignore_patterns|join(', ') if task.ignore_patterns else '-' }}</dd>
+      <dt>错误摘要</dt><dd>{{ task.last_error or '-' }}</dd>
+    </dl>
+  </div>
+  <div>
+    <div class="panel-head">
+      <h2>执行进度</h2>
+      <p>下载和上传的完成量会在每个文件结束后刷新。</p>
+    </div>
+    <div class="progress-block">
+      <div class="progress-line"><span>下载文件</span><span>{{ task.completed_download_files }}/{{ task.total_files }}</span></div>
+      <progress value="{{ task.downloaded_bytes }}" max="{{ task.total_bytes or 1 }}"></progress>
+      <div class="progress-line"><span>上传文件</span><span>{{ task.completed_upload_files }}/{{ task.total_files }}</span></div>
+      <progress value="{{ task.uploaded_bytes }}" max="{{ task.total_bytes or 1 }}"></progress>
+    </div>
+  </div>
+</section>
+
+<section class="panel split logs-layout">
+  <div>
+    <div class="panel-head">
+      <h2>任务日志</h2>
+      <p>日志会写入数据库和滚动文件，页面会自动刷新。</p>
+    </div>
+    <div class="log-box" id="log-box" data-task-id="{{ task.id }}" data-last-log-id="{{ logs[-1].id if logs else 0 }}">
+      {% for item in logs %}
+      <div class="log-row log-{{ item.level|lower }}">[{{ item.created_at }}] [{{ item.level }}] [{{ item.stage }}] {{ item.message }}</div>
+      {% endfor %}
+    </div>
+  </div>
+  <div>
+    <div class="panel-head">
+      <h2>文件样本</h2>
+      <p>当前展示前 {{ files|length }} 条，共 {{ file_count }} 个文件。</p>
+    </div>
+    <div class="file-list">
+      {% for file in files %}
+      <div class="file-row">
+        <div>
+          <strong>{{ file.file_path }}</strong>
+          <div class="muted">{{ file.file_size }} bytes</div>
+        </div>
+        <div class="file-statuses">
+          <span class="badge small badge-{{ file.download_status if file.download_status in ['completed', 'failed'] else 'queued' }}">D: {{ file.download_status }}</span>
+          <span class="badge small badge-{{ file.upload_status if file.upload_status in ['completed', 'failed'] else 'queued' }}">U: {{ file.upload_status }}</span>
+        </div>
+      </div>
+      {% else %}
+      <p class="empty">任务还没有建立文件清单。</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+<script src="/static/task_detail.js"></script>
+{% endblock %}

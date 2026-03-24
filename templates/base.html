@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}HF Downloader{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">HUGGING FACE TO TOS</p>
+          <h1>任务队列下载控制台</h1>
+          <p class="hero-copy">把模型和数据集下载、上传、日志和失败重试收拢到一个清晰的工作台里。</p>
+        </div>
+        <nav>
+          <a href="/tasks">任务总览</a>
+        </nav>
+      </header>
+      <main>
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

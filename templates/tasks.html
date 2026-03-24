@@ -1,0 +1,132 @@
+{% extends 'base.html' %}
+{% block title %}任务总览{% endblock %}
+{% block content %}
+<section class="panel panel-grid">
+  <div class="panel-head">
+    <h2>新建任务</h2>
+    <p>每个任务都可以单独指定仓库类型、HF Token、TOS 目标地址和高级筛选规则。</p>
+  </div>
+  {% if form_error %}
+  <div class="alert">{{ form_error }}</div>
+  {% endif %}
+  <form action="/tasks" method="post" class="task-form">
+    <label>
+      <span>Repo ID</span>
+      <input type="text" name="repo_id" placeholder="owner/name" required />
+    </label>
+    <label>
+      <span>Repo Type</span>
+      <select name="repo_type" required>
+        <option value="dataset">dataset</option>
+        <option value="model">model</option>
+      </select>
+    </label>
+    <label class="wide">
+      <span>HF Token</span>
+      <input type="password" name="hf_token" placeholder="hf_xxx" required />
+    </label>
+    <label class="wide">
+      <span>TOS 目标</span>
+      <input type="text" name="tos_target" placeholder="tos://bucket/prefix" required />
+    </label>
+    <label>
+      <span>Revision</span>
+      <input type="text" name="revision" placeholder="main / branch / commit" />
+    </label>
+    <label>
+      <span>批次上限 (GB)</span>
+      <input type="number" name="batch_size_limit_gb" min="1" value="{{ defaults.batch_size_limit_gb }}" required />
+    </label>
+    <label>
+      <span>重试次数</span>
+      <input type="number" name="max_retries" min="0" max="10" value="{{ defaults.max_retries }}" required />
+    </label>
+    <label class="toggle">
+      <input type="checkbox" name="cleanup_local_files" value="true" checked />
+      <span>上传成功后删除本地文件</span>
+    </label>
+    <label class="wide">
+      <span>Allow Patterns</span>
+      <textarea name="allow_patterns" rows="4" placeholder="每行一个模式，例如\n*.json\ndata/train/*"></textarea>
+    </label>
+    <label class="wide">
+      <span>Ignore Patterns</span>
+      <textarea name="ignore_patterns" rows="4" placeholder="每行一个模式，例如\n*.tmp\ncache/*"></textarea>
+    </label>
+    <div class="actions wide">
+      <button type="submit">加入队列</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head status-strip">
+    <div>
+      <h2>服务状态</h2>
+      <p>串行队列 worker 会按照排队顺序依次执行。</p>
+    </div>
+    <div class="health-pill {{ 'healthy' if health.worker_alive and health.tosutil_available and health.tosutil_config_exists else 'warning' }}">
+      <span>Worker: {{ 'online' if health.worker_alive else 'offline' }}</span>
+      <span>tosutil: {{ 'ok' if health.tosutil_available else 'missing' }}</span>
+      <span>config: {{ 'ok' if health.tosutil_config_exists else 'missing' }}</span>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>仓库</th>
+          <th>类型</th>
+          <th>状态</th>
+          <th>阶段</th>
+          <th>进度</th>
+          <th>队列</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in tasks %}
+        <tr>
+          <td><a href="/tasks/{{ task.id }}">#{{ task.id }}</a></td>
+          <td>
+            <strong>{{ task.repo_id }}</strong>
+            <div class="muted">{{ task.tos_target }}</div>
+          </td>
+          <td>{{ task.repo_type }}</td>
+          <td><span class="badge badge-{{ task.status }}">{{ task.status }}</span></td>
+          <td>{{ task.current_stage }}</td>
+          <td>
+            <div class="progress-line">
+              <span>下载 {{ task.completed_download_files }}/{{ task.total_files }}</span>
+              <span>上传 {{ task.completed_upload_files }}/{{ task.total_files }}</span>
+            </div>
+            <progress value="{{ task.uploaded_bytes }}" max="{{ task.total_bytes or 1 }}"></progress>
+          </td>
+          <td>{{ task.queue_position }}</td>
+          <td>
+            <div class="row-actions">
+              {% if task.status == 'queued' %}
+              <form action="/tasks/{{ task.id }}/move/up" method="post"><button type="submit" class="ghost">上移</button></form>
+              <form action="/tasks/{{ task.id }}/move/down" method="post"><button type="submit" class="ghost">下移</button></form>
+              {% endif %}
+              {% if task.status in ['queued', 'running'] %}
+              <form action="/tasks/{{ task.id }}/cancel" method="post"><button type="submit" class="danger">取消</button></form>
+              {% endif %}
+              {% if task.status in ['failed', 'cancelled', 'interrupted'] %}
+              <form action="/tasks/{{ task.id }}/retry" method="post"><button type="submit">重试</button></form>
+              {% endif %}
+              {% if task.status in ['succeeded', 'failed', 'cancelled', 'interrupted'] %}
+              <form action="/tasks/{{ task.id }}/delete" method="post"><button type="submit" class="ghost">删除</button></form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="empty">还没有任务，先创建一个试试。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

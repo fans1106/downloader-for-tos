@@ -1,0 +1,6 @@
+logs/
+tests/
+.vscode/
+__pycache__/
+data/
+downloads
