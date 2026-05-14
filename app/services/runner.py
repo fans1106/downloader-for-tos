@@ -20,6 +20,7 @@ from app.security import TokenCipher
 logger = logging.getLogger(__name__)
 
 DEFAULT_IGNORE_PATTERNS = [".gitattributes", ".gitignore"]
+MAX_DOWNLOAD_FILE_SIZE_BYTES = 50 * 1024 * 1024 * 1024
 
 
 class TaskExecutionError(Exception):
@@ -205,13 +206,24 @@ class TaskRunner:
         except Exception as exc:  # noqa: BLE001
             raise TaskExecutionError(f"Unable to fetch repository manifest: {exc}") from exc
 
+        skipped_items = [
+            item
+            for item in dry_run_items
+            if int(getattr(item, "file_size", 0) or 0) > MAX_DOWNLOAD_FILE_SIZE_BYTES
+        ]
         manifest = [
             {
                 "file_path": item.filename,
                 "file_size": int(getattr(item, "file_size", 0) or 0),
             }
             for item in dry_run_items
+            if int(getattr(item, "file_size", 0) or 0) <= MAX_DOWNLOAD_FILE_SIZE_BYTES
         ]
+        if skipped_items:
+            task_logger.info(
+                "manifest",
+                f"Skipped {len(skipped_items)} files larger than 50 GB due to hf_xet limits",
+            )
         total_bytes = sum(entry["file_size"] for entry in manifest)
         task_logger.info(
             "manifest",
@@ -294,7 +306,7 @@ class TaskRunner:
             self.db.update_file_status(task_id, file_path, upload_status="failed", error=str(exc))
             raise
         self.db.update_file_status(task_id, file_path, upload_status="completed", error=None)
-        task_logger.info("upload", f"Uploaded {file_path}")
+        task_logger.info("upload", f"Uploaded {file_path} to {tos_target}")
 
         if task["cleanup_local_files"]:
             try:
