@@ -20,7 +20,7 @@ from app.security import TokenCipher
 logger = logging.getLogger(__name__)
 
 DEFAULT_IGNORE_PATTERNS = [".gitattributes", ".gitignore"]
-MAX_DOWNLOAD_FILE_SIZE_BYTES = 50 * 1024 * 1024 * 1024
+MAX_DOWNLOAD_FILE_SIZE_BYTES = 50 * 1000 * 1000 * 1000
 
 
 class TaskExecutionError(Exception):
