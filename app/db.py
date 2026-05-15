@@ -186,25 +186,46 @@ class Database:
 
     def save_task_manifest(self, task_id: int, files: list[dict[str, Any]]) -> None:
         now = utcnow()
-        total_bytes = sum(item["file_size"] for item in files)
         with self._lock, self.connect() as conn:
-            conn.execute("DELETE FROM task_files WHERE task_id = ?", (task_id,))
+            conn.execute("DROP TABLE IF EXISTS temp.temp_task_manifest_paths")
+            conn.execute("CREATE TEMP TABLE temp_task_manifest_paths(file_path TEXT PRIMARY KEY)")
             conn.executemany(
                 """
                 INSERT INTO task_files(task_id, file_path, file_size, download_status, upload_status, last_error, created_at, updated_at)
                 VALUES (?, ?, ?, 'pending', 'pending', NULL, ?, ?)
+                ON CONFLICT(task_id, file_path) DO UPDATE SET
+                    file_size = excluded.file_size,
+                    updated_at = excluded.updated_at
                 """,
                 [(task_id, item["file_path"], item["file_size"], now, now) for item in files],
+            )
+            conn.executemany(
+                "INSERT INTO temp_task_manifest_paths(file_path) VALUES (?)",
+                [(item["file_path"],) for item in files],
+            )
+            conn.execute(
+                """
+                DELETE FROM task_files
+                WHERE task_id = ?
+                  AND file_path NOT IN (SELECT file_path FROM temp_task_manifest_paths)
+                """,
+                (task_id,),
             )
             conn.execute(
                 """
                 UPDATE tasks
-                SET total_bytes = ?, total_files = ?, downloaded_bytes = 0, uploaded_bytes = 0,
-                    completed_download_files = 0, completed_upload_files = 0
+                SET total_bytes = (
+                        SELECT COALESCE(SUM(file_size), 0) FROM task_files WHERE task_id = ?
+                    ),
+                    total_files = (
+                        SELECT COUNT(*) FROM task_files WHERE task_id = ?
+                    )
                 WHERE id = ?
                 """,
-                (total_bytes, len(files), task_id),
+                (task_id, task_id, task_id),
             )
+            conn.execute("DROP TABLE temp.temp_task_manifest_paths")
+        self.refresh_progress(task_id)
 
     def claim_next_task(self) -> dict[str, Any] | None:
         with self._lock, self.connect() as conn:
@@ -264,18 +285,34 @@ class Database:
             raise ValueError("Task is not retryable")
         queue_position = self.next_queue_position()
         with self._lock, self.connect() as conn:
-            conn.execute("DELETE FROM task_files WHERE task_id = ?", (task_id,))
+            conn.execute(
+                """
+                UPDATE task_files
+                SET download_status = CASE
+                        WHEN download_status = 'completed' THEN download_status
+                        ELSE 'pending'
+                    END,
+                    upload_status = CASE
+                        WHEN upload_status = 'completed' THEN upload_status
+                        ELSE 'pending'
+                    END,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (utcnow(), task_id),
+            )
             conn.execute(
                 """
                 UPDATE tasks
                 SET status = 'queued', queue_position = ?, cancel_requested = 0,
                     current_stage = 'queued', last_error = NULL, finished_at = NULL,
-                    started_at = NULL, total_bytes = 0, downloaded_bytes = 0, uploaded_bytes = 0,
-                    total_files = 0, completed_download_files = 0, completed_upload_files = 0
+                    started_at = NULL
                 WHERE id = ?
                 """,
                 (queue_position, task_id),
             )
+        self.refresh_progress(task_id)
         return self.get_task(task_id)
 
     def delete_finished_task(self, task_id: int) -> bool:

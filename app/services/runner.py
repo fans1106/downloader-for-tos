@@ -150,6 +150,7 @@ class TaskRunner:
         manifest = self._load_manifest(task, token, task_logger)
         self.db.save_task_manifest(task_id, manifest)
         self.db.refresh_progress(task_id)
+        file_statuses = {item["file_path"]: item for item in self.db.get_task_files(task_id)}
 
         if not manifest:
             task_logger.info("completed", "Repository contains no files after pattern filtering")
@@ -167,11 +168,19 @@ class TaskRunner:
             self.db.set_task_stage(task_id, "download")
             for file_info in batch:
                 self._ensure_not_cancelled(task_id)
+                file_path = file_info["file_path"]
+                if file_statuses.get(file_path, {}).get("download_status") == "completed":
+                    task_logger.info("download", f"Skipping completed download {file_path}")
+                    continue
                 self._download_file(task, token, download_dir, file_info, task_logger)
 
             self.db.set_task_stage(task_id, "upload")
             for file_info in batch:
                 self._ensure_not_cancelled(task_id)
+                file_path = file_info["file_path"]
+                if file_statuses.get(file_path, {}).get("upload_status") == "completed":
+                    task_logger.info("upload", f"Skipping completed upload {file_path}")
+                    continue
                 self._upload_file(task, download_dir, file_info, task_logger)
 
         if task["cleanup_local_files"]:
