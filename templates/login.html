@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block title %}登录{% endblock %}
+{% block content %}
+<section class="panel auth-panel">
+  <div class="panel-head">
+    <div>
+      <h2>访问验证</h2>
+      <p>输入密码后进入下载控制台。</p>
+    </div>
+  </div>
+  {% if error %}
+  <div class="alert">{{ error }}</div>
+  {% endif %}
+  <form action="/login" method="post" class="auth-form">
+    <input type="hidden" name="next_url" value="{{ next_url }}" />
+    <label>
+      <span>密码</span>
+      <input type="password" name="password" autofocus required />
+    </label>
+    <div class="actions">
+      <button type="submit">进入</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

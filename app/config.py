@@ -19,6 +19,11 @@ class Settings:
         "/home/downloader/HongbangFan/.tosutilconfig",
     )
     app_secret: str = os.getenv("HF_DOWNLOADER_APP_SECRET", "change-me-in-production")
+    auth_password: str = os.getenv(
+        "HF_DOWNLOADER_AUTH_PASSWORD",
+        os.getenv("HF_DOWNLOADER_APP_SECRET", "change-me-in-production"),
+    )
+    auth_cookie_name: str = "hf_downloader_auth"
     host: str = os.getenv("HF_DOWNLOADER_HOST", "0.0.0.0")
     port: int = int(os.getenv("HF_DOWNLOADER_PORT", "8000"))
     queue_poll_interval: float = float(os.getenv("HF_DOWNLOADER_QUEUE_POLL", "2.0"))

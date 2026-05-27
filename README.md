@@ -30,6 +30,7 @@ docker build -t hf-downloader:latest .
 docker run --rm \
   -p 8000:8000 \
   -e HF_DOWNLOADER_APP_SECRET=replace-this-secret \
+  -e HF_DOWNLOADER_AUTH_PASSWORD=replace-this-password \
   -e HF_DOWNLOADER_TOSUTIL_PATH=/opt/tosutil/tosutil \
   -e HF_DOWNLOADER_TOSUTIL_CONFIG=/opt/tosutil/.tosutilconfig \
   -v $(pwd)/data:/app/data \
@@ -89,6 +90,7 @@ Compose 默认使用 named volumes 持久化数据，避免 Linux 上 bind mount
 - `HF_DOWNLOADER_HOST`
 - `HF_DOWNLOADER_PORT`
 - `HF_DOWNLOADER_APP_SECRET`
+- `HF_DOWNLOADER_AUTH_PASSWORD`：Web/API 访问密码，默认使用 `HF_DOWNLOADER_APP_SECRET`
 - `HF_DOWNLOADER_TOSUTIL_PATH`
 - `HF_DOWNLOADER_TOSUTIL_CONFIG`
 - `HF_DOWNLOADER_TOSUTIL_DIR`

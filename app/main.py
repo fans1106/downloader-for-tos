@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -15,7 +16,7 @@ from app.config import settings
 from app.db import Database
 from app.logging_utils import configure_logging
 from app.schemas import HealthResponse, ReorderRequest, TaskCreate, TaskDetail, TaskLogsResponse, TaskSummary, normalize_patterns
-from app.security import TokenCipher, mask_secret
+from app.security import TokenCipher, build_auth_token, mask_secret, verify_auth_token
 from app.services.runner import RuntimeInspector, TaskRunner
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,31 @@ def create_app() -> FastAPI:
     def get_runner(request: Request) -> TaskRunner:
         return request.app.state.runner
 
+    def is_public_path(path: str) -> bool:
+        return path == "/login" or path == "/healthz" or path == "/favicon.ico" or path.startswith("/static/")
+
+    def safe_next_url(value: str | None) -> str:
+        if not value or not value.startswith("/") or value.startswith("//"):
+            return "/tasks"
+        return value
+
+    @app.middleware("http")
+    async def require_password_auth(request: Request, call_next):
+        if is_public_path(request.url.path) or verify_auth_token(
+            request.cookies.get(settings.auth_cookie_name),
+            settings.auth_password,
+            settings.app_secret,
+        ):
+            return await call_next(request)
+
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+
+        next_url = request.url.path
+        if request.url.query:
+            next_url = f"{next_url}?{request.url.query}"
+        return RedirectResponse(url=f"/login?next={quote_plus(next_url)}", status_code=303)
+
     def render_task(task: dict, request: Request) -> TaskDetail:
         payload = dict(task)
         token = request.app.state.cipher.decrypt(payload["hf_token_encrypted"])
@@ -101,6 +127,33 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request) -> HTMLResponse:
         return RedirectResponse(url="/tasks", status_code=303)
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"request": request, "error": None, "next_url": safe_next_url(request.query_params.get("next"))},
+        )
+
+    @app.post("/login", response_class=HTMLResponse)
+    async def login(request: Request, password: str = Form(...), next_url: str = Form("/tasks")):
+        if not hmac.compare_digest(password, settings.auth_password):
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"request": request, "error": "密码错误", "next_url": safe_next_url(next_url)},
+                status_code=401,
+            )
+        response = RedirectResponse(url=safe_next_url(next_url), status_code=303)
+        response.set_cookie(
+            settings.auth_cookie_name,
+            build_auth_token(settings.auth_password, settings.app_secret),
+            httponly=True,
+            samesite="lax",
+            max_age=7 * 24 * 60 * 60,
+        )
+        return response
 
     @app.get("/tasks", response_class=HTMLResponse)
     async def tasks_page(request: Request) -> HTMLResponse:
