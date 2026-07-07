@@ -5,12 +5,15 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError
-from huggingface_hub.utils import HfHubHTTPError
+from huggingface_hub.hf_api import RepoFile
+from huggingface_hub.utils import HfHubHTTPError, filter_repo_objects
 
 from app.config import Settings
 from app.db import Database
@@ -195,16 +198,41 @@ class TaskRunner:
                 ignore_patterns.append(pattern)
 
         task_logger.info("manifest", "Fetching repository file manifest from Hugging Face")
-        try:
-            dry_run_items = snapshot_download(
+        api = HfApi(token=token)
+
+        def operation() -> tuple[str | None, list[RepoFile]]:
+            repo_info = api.repo_info(
                 repo_id=task["repo_id"],
                 repo_type=task["repo_type"],
-                local_dir=task["local_download_dir"],
-                token=token,
                 revision=task.get("revision"),
-                allow_patterns=task["allow_patterns"] or None,
-                ignore_patterns=ignore_patterns or None,
-                dry_run=True,
+            )
+            resolved_revision = repo_info.sha or task.get("revision")
+            repo_files = (
+                item
+                for item in api.list_repo_tree(
+                    repo_id=task["repo_id"],
+                    repo_type=task["repo_type"],
+                    revision=resolved_revision,
+                    recursive=True,
+                    token=token,
+                )
+                if isinstance(item, RepoFile)
+            )
+            return (
+                resolved_revision,
+                list(
+                    filter_repo_objects(
+                        repo_files,
+                        allow_patterns=task["allow_patterns"] or None,
+                        ignore_patterns=ignore_patterns or None,
+                        key=lambda item: item.path,
+                    )
+                )
+            )
+
+        try:
+            resolved_revision, repo_files = self._run_with_retries(
+                task, "manifest", "repository manifest", operation, task_logger
             )
         except RepositoryNotFoundError as exc:
             raise TaskExecutionError("Repository not found or token has no access") from exc
@@ -212,21 +240,24 @@ class TaskRunner:
             raise TaskExecutionError("Requested revision was not found") from exc
         except HfHubHTTPError as exc:
             raise self._wrap_hf_error(exc) from exc
+        except TaskExecutionError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise TaskExecutionError(f"Unable to fetch repository manifest: {exc}") from exc
 
         skipped_items = [
             item
-            for item in dry_run_items
-            if int(getattr(item, "file_size", 0) or 0) > MAX_DOWNLOAD_FILE_SIZE_BYTES
+            for item in repo_files
+            if int(getattr(item, "size", 0) or 0) > MAX_DOWNLOAD_FILE_SIZE_BYTES
         ]
         manifest = [
             {
-                "file_path": item.filename,
-                "file_size": int(getattr(item, "file_size", 0) or 0),
+                "file_path": item.path,
+                "file_size": int(getattr(item, "size", 0) or 0),
+                "revision": resolved_revision,
             }
-            for item in dry_run_items
-            if int(getattr(item, "file_size", 0) or 0) <= MAX_DOWNLOAD_FILE_SIZE_BYTES
+            for item in repo_files
+            if int(getattr(item, "size", 0) or 0) <= MAX_DOWNLOAD_FILE_SIZE_BYTES
         ]
         if skipped_items:
             task_logger.info(
@@ -254,18 +285,13 @@ class TaskRunner:
         task_logger.info("download", f"Downloading {file_path}")
 
         def operation() -> None:
-            ignore_patterns = list(task["ignore_patterns"])
-            for pattern in DEFAULT_IGNORE_PATTERNS:
-                if pattern not in ignore_patterns:
-                    ignore_patterns.append(pattern)
-            snapshot_download(
+            hf_hub_download(
                 repo_id=task["repo_id"],
+                filename=file_path,
                 repo_type=task["repo_type"],
                 local_dir=str(download_dir),
                 token=token,
-                revision=task.get("revision"),
-                allow_patterns=[file_path],
-                ignore_patterns=ignore_patterns or None,
+                revision=file_info.get("revision") or task.get("revision"),
             )
 
         try:
@@ -330,17 +356,17 @@ class TaskRunner:
         file_path: str,
         operation: Any,
         task_logger: TaskLogger,
-    ) -> None:
+    ) -> Any:
         retries = int(task["max_retries"])
         for attempt in range(retries + 1):
             try:
-                operation()
-                return
+                return operation()
             except TaskExecutionError as exc:
                 if attempt >= retries:
                     raise
-                task_logger.warning(stage, f"Retrying {file_path} after task error: {exc}")
-                time.sleep(min(2 ** attempt, 10))
+                delay = self._retry_delay(None, attempt)
+                task_logger.warning(stage, f"Retrying {file_path} after task error in {delay:.0f}s: {exc}")
+                time.sleep(delay)
             except RepositoryNotFoundError as exc:
                 raise TaskExecutionError("Repository not found or token has no access") from exc
             except RevisionNotFoundError as exc:
@@ -351,18 +377,37 @@ class TaskRunner:
                     raise wrapped from exc
                 if attempt >= retries:
                     raise wrapped from exc
-                task_logger.warning(stage, f"Retrying {file_path} after Hugging Face error: {wrapped}")
-                time.sleep(min(2 ** attempt, 10))
+                delay = self._retry_delay(exc, attempt)
+                task_logger.warning(stage, f"Retrying {file_path} after Hugging Face error in {delay:.0f}s: {wrapped}")
+                time.sleep(delay)
             except subprocess.SubprocessError as exc:
                 if attempt >= retries:
                     raise TaskExecutionError(f"Subprocess failed for {file_path}: {exc}") from exc
-                task_logger.warning(stage, f"Retrying {file_path} after subprocess error: {exc}")
-                time.sleep(min(2 ** attempt, 10))
+                delay = self._retry_delay(None, attempt)
+                task_logger.warning(stage, f"Retrying {file_path} after subprocess error in {delay:.0f}s: {exc}")
+                time.sleep(delay)
             except Exception as exc:  # noqa: BLE001
                 if attempt >= retries:
                     raise TaskExecutionError(f"{stage} failed for {file_path}: {exc}") from exc
-                task_logger.warning(stage, f"Retrying {file_path} after error: {exc}")
-                time.sleep(min(2 ** attempt, 10))
+                delay = self._retry_delay(None, attempt)
+                task_logger.warning(stage, f"Retrying {file_path} after error in {delay:.0f}s: {exc}")
+                time.sleep(delay)
+
+    def _retry_delay(self, exc: HfHubHTTPError | None, attempt: int) -> float:
+        if exc is not None:
+            retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After")
+            if retry_after:
+                try:
+                    return max(float(retry_after), 0)
+                except ValueError:
+                    try:
+                        retry_at = parsedate_to_datetime(retry_after)
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0)
+                    except (TypeError, ValueError):
+                        pass
+        return float(min(2 ** attempt, 10))
 
     def _ensure_not_cancelled(self, task_id: int) -> None:
         if self.db.should_cancel(task_id):
