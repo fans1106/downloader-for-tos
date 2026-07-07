@@ -20,9 +20,9 @@ services:
       HF_DOWNLOADER_QUEUE_POLL: ${HF_DOWNLOADER_QUEUE_POLL:-2.0}
       HF_DOWNLOADER_LOG_LEVEL: ${HF_DOWNLOADER_LOG_LEVEL:-INFO}
     volumes:
-      - hf_downloader_data:/app/data
-      - hf_downloader_logs:/app/logs
-      - hf_downloader_downloads:/app/downloads
+      - /data/downloader4tos/data:/app/data
+      - /data/downloader4tos/logs:/app/logs
+      - /data/downloader4tos/downloads:/app/downloads
       - ${HF_DOWNLOADER_TOSUTIL_DIR:-./tosutil}:/opt/tosutil:ro
     healthcheck:
       test:
@@ -36,8 +36,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-volumes:
-  hf_downloader_data: /data/downloader4tos/data
-  hf_downloader_logs: /data/downloader4tos/logs
-  hf_downloader_downloads: /data/downloader4tos/downloads
