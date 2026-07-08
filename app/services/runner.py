@@ -154,14 +154,20 @@ class TaskRunner:
         manifest = self._load_manifest(task, token, task_logger)
         self.db.save_task_manifest(task_id, manifest)
         self.db.refresh_progress(task_id)
-        file_statuses = {item["file_path"]: item for item in self.db.get_task_files(task_id)}
+        manifest_by_path = {item["file_path"]: item for item in manifest}
 
         if not manifest:
             task_logger.info("completed", "Repository contains no files after pattern filtering")
             return
 
+        self._upload_downloaded_pending_files(task, download_dir, task_logger)
+        pending_download_files = self._attach_manifest_info(self.db.list_pending_download_files(task_id), manifest_by_path)
+        if not pending_download_files:
+            task_logger.info("completed", "All files are already downloaded and uploaded")
+            return
+
         batch_limit = int(task["batch_size_limit_bytes"])
-        batches = chunk_files(manifest, batch_limit)
+        batches = chunk_files(pending_download_files, batch_limit)
         for batch_index, batch in enumerate(batches, start=1):
             self._ensure_not_cancelled(task_id)
             readable_size = sum(item["file_size"] for item in batch) / (1024 ** 3)
@@ -170,20 +176,66 @@ class TaskRunner:
                 f"Starting batch {batch_index}/{len(batches)} with {len(batch)} files ({readable_size:.2f} GB)",
             )
             self.db.set_task_stage(task_id, "download")
-            self._download_batch(task, token, download_dir, batch, file_statuses, task_logger)
+            self._download_batch(task, token, download_dir, batch, task_logger)
 
             self.db.set_task_stage(task_id, "upload")
             for file_info in batch:
                 self._ensure_not_cancelled(task_id)
-                file_path = file_info["file_path"]
-                if file_statuses.get(file_path, {}).get("upload_status") == "completed":
-                    task_logger.info("upload", f"Skipping completed upload {file_path}")
-                    continue
                 self._upload_file(task, download_dir, file_info, task_logger)
 
         if task["cleanup_local_files"]:
             clean_empty_directories(download_dir)
             task_logger.info("cleanup", "Removed empty task directories")
+
+    def _attach_manifest_info(
+        self,
+        files: list[dict[str, Any]],
+        manifest_by_path: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched_files: list[dict[str, Any]] = []
+        for item in files:
+            manifest_item = manifest_by_path.get(item["file_path"], {})
+            enriched_item = dict(item)
+            if "revision" in manifest_item:
+                enriched_item["revision"] = manifest_item["revision"]
+            enriched_files.append(enriched_item)
+        return enriched_files
+
+    def _upload_downloaded_pending_files(
+        self,
+        task: dict[str, Any],
+        download_dir: Path,
+        task_logger: TaskLogger,
+    ) -> None:
+        task_id = task["id"]
+        downloaded_pending_upload = self.db.list_downloaded_pending_upload_files(task_id)
+        if not downloaded_pending_upload:
+            return
+
+        self.db.set_task_stage(task_id, "upload")
+        task_logger.info(
+            "upload",
+            f"Uploading {len(downloaded_pending_upload)} previously downloaded files before new downloads",
+        )
+        missing_paths: list[str] = []
+        for file_info in downloaded_pending_upload:
+            self._ensure_not_cancelled(task_id)
+            local_file = download_dir / file_info["file_path"]
+            if not local_file.exists():
+                missing_paths.append(file_info["file_path"])
+                continue
+            self._upload_file(task, download_dir, file_info, task_logger)
+
+        if missing_paths:
+            self.db.reset_download_statuses(
+                task_id,
+                missing_paths,
+                "Local file missing before upload; download will be retried",
+            )
+            task_logger.warning(
+                "download",
+                f"Reset {len(missing_paths)} downloaded files to pending because local files are missing",
+            )
 
     def _download_batch(
         self,
@@ -191,18 +243,10 @@ class TaskRunner:
         token: str,
         download_dir: Path,
         batch: list[dict[str, Any]],
-        file_statuses: dict[str, dict[str, Any]],
         task_logger: TaskLogger,
     ) -> None:
         task_id = task["id"]
-        to_download: list[dict[str, Any]] = []
-        for file_info in batch:
-            self._ensure_not_cancelled(task_id)
-            file_path = file_info["file_path"]
-            if file_statuses.get(file_path, {}).get("download_status") == "completed":
-                task_logger.info("download", f"Skipping completed download {file_path}")
-                continue
-            to_download.append(file_info)
+        to_download = [file_info for file_info in batch if file_info["download_status"] != "completed"]
 
         if not to_download:
             return

@@ -397,6 +397,54 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_pending_download_files(self, task_id: int) -> list[dict[str, Any]]:
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file_path, file_size, download_status, upload_status, last_error
+                FROM task_files
+                WHERE task_id = ?
+                  AND download_status != 'completed'
+                  AND upload_status != 'completed'
+                ORDER BY id ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_downloaded_pending_upload_files(self, task_id: int) -> list[dict[str, Any]]:
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file_path, file_size, download_status, upload_status, last_error
+                FROM task_files
+                WHERE task_id = ?
+                  AND download_status = 'completed'
+                  AND upload_status != 'completed'
+                ORDER BY id ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reset_download_statuses(self, task_id: int, file_paths: list[str], error: str | None = None) -> None:
+        if not file_paths:
+            return
+        now = utcnow()
+        with self._lock, self.connect() as conn:
+            conn.executemany(
+                """
+                UPDATE task_files
+                SET download_status = 'pending',
+                    last_error = ?,
+                    updated_at = ?
+                WHERE task_id = ?
+                  AND file_path = ?
+                """,
+                [(error, now, task_id, file_path) for file_path in file_paths],
+            )
+        self.refresh_progress(task_id)
+
     def reorder_queued_tasks(self, task_ids: list[int]) -> list[dict[str, Any]]:
         with self._lock, self.connect() as conn:
             rows = conn.execute("SELECT id FROM tasks WHERE status = 'queued' ORDER BY queue_position ASC, id ASC").fetchall()
