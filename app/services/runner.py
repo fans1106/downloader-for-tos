@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -169,13 +170,7 @@ class TaskRunner:
                 f"Starting batch {batch_index}/{len(batches)} with {len(batch)} files ({readable_size:.2f} GB)",
             )
             self.db.set_task_stage(task_id, "download")
-            for file_info in batch:
-                self._ensure_not_cancelled(task_id)
-                file_path = file_info["file_path"]
-                if file_statuses.get(file_path, {}).get("download_status") == "completed":
-                    task_logger.info("download", f"Skipping completed download {file_path}")
-                    continue
-                self._download_file(task, token, download_dir, file_info, task_logger)
+            self._download_batch(task, token, download_dir, batch, file_statuses, task_logger)
 
             self.db.set_task_stage(task_id, "upload")
             for file_info in batch:
@@ -189,6 +184,45 @@ class TaskRunner:
         if task["cleanup_local_files"]:
             clean_empty_directories(download_dir)
             task_logger.info("cleanup", "Removed empty task directories")
+
+    def _download_batch(
+        self,
+        task: dict[str, Any],
+        token: str,
+        download_dir: Path,
+        batch: list[dict[str, Any]],
+        file_statuses: dict[str, dict[str, Any]],
+        task_logger: TaskLogger,
+    ) -> None:
+        task_id = task["id"]
+        to_download: list[dict[str, Any]] = []
+        for file_info in batch:
+            self._ensure_not_cancelled(task_id)
+            file_path = file_info["file_path"]
+            if file_statuses.get(file_path, {}).get("download_status") == "completed":
+                task_logger.info("download", f"Skipping completed download {file_path}")
+                continue
+            to_download.append(file_info)
+
+        if not to_download:
+            return
+
+        workers = max(1, int(self.settings.download_workers))
+        if workers == 1 or len(to_download) == 1:
+            for file_info in to_download:
+                self._ensure_not_cancelled(task_id)
+                self._download_file(task, token, download_dir, file_info, task_logger)
+            return
+
+        task_logger.info("download", f"Downloading {len(to_download)} files with {workers} workers")
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"task-{task_id}-download") as executor:
+            futures = [
+                executor.submit(self._download_file, task, token, download_dir, file_info, task_logger)
+                for file_info in to_download
+            ]
+            for future in as_completed(futures):
+                self._ensure_not_cancelled(task_id)
+                future.result()
 
     def _load_manifest(self, task: dict[str, Any], token: str, task_logger: TaskLogger) -> list[dict[str, Any]]:
         self.db.set_task_stage(task["id"], "manifest")

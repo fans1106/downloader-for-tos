@@ -30,6 +30,7 @@ class Settings:
     log_level: str = os.getenv("HF_DOWNLOADER_LOG_LEVEL", "INFO")
     default_batch_size_gb: int = int(os.getenv("HF_DOWNLOADER_DEFAULT_BATCH_SIZE_GB", "800"))
     default_max_retries: int = int(os.getenv("HF_DOWNLOADER_DEFAULT_MAX_RETRIES", "3"))
+    download_workers: int = int(os.getenv("HF_DOWNLOADER_DOWNLOAD_WORKERS", "4"))
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
