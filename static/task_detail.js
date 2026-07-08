@@ -6,12 +6,20 @@
 
   const taskId = logBox.dataset.taskId;
   let lastId = Number(logBox.dataset.lastLogId || 0);
+  const maxLogRows = 200;
+
+  const trimLogs = () => {
+    while (logBox.children.length > maxLogRows) {
+      logBox.firstElementChild?.remove();
+    }
+  };
 
   const renderLog = (item) => {
     const row = document.createElement('div');
     row.className = `log-row log-${item.level.toLowerCase()}`;
     row.textContent = `[${item.created_at}] [${item.level}] [${item.stage}] ${item.message}`;
     logBox.appendChild(row);
+    trimLogs();
     logBox.scrollTop = logBox.scrollHeight;
   };
 

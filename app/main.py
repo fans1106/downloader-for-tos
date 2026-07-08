@@ -182,7 +182,7 @@ def create_app() -> FastAPI:
         task = db.get_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        logs = db.list_logs(task_id, limit=500)
+        logs = db.list_recent_logs(task_id, limit=200)
         files = db.get_task_files(task_id)
         return templates.TemplateResponse(
             request,

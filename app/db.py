@@ -121,6 +121,24 @@ class Database:
             ).fetchall()
         return [self._log_from_row(row) for row in rows]
 
+    def list_recent_logs(self, task_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, created_at, level, stage, message
+                FROM (
+                    SELECT id, task_id, created_at, level, stage, message
+                    FROM task_logs
+                    WHERE task_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+                """,
+                (task_id, limit),
+            ).fetchall()
+        return [self._log_from_row(row) for row in rows]
+
     def next_queue_position(self) -> int:
         with self._lock, self.connect() as conn:
             row = conn.execute("SELECT COALESCE(MAX(queue_position), 0) + 1 AS next_position FROM tasks").fetchone()
